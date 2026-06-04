@@ -1,0 +1,28 @@
+# Sekreti / okolna sreda
+.env
+.env.*
+!.env.example
+
+# Zavisimosti
+node_modules/
+
+# Hardhat build artefakti
+cache/
+artifacts/
+typechain/
+typechain-types/
+
+# Deploy istoria (lokalna, ne se kachva na GitHub)
+deployed/
+
+# Hardhat Ignition
+ignition/deployments/
+
+# Pokritie / otcheti
+coverage/
+coverage.json
+
+# Logove i vremenni faylove
+*.log
+npm-debug.log*
+.DS_Store

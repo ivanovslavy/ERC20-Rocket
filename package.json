@@ -1,0 +1,26 @@
+{
+  "name": "rocket-token",
+  "version": "1.0.0",
+  "description": "Rocket (RCT) ERC20 token s anti-bot guardian politiki - Hardhat proekt",
+  "license": "MIT",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:localhost": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:ethereum": "hardhat run scripts/deploy.js --network ethereum",
+    "deploy:base": "hardhat run scripts/deploy.js --network base",
+    "deploy:bnb": "hardhat run scripts/deploy.js --network bnb",
+    "deploy:polygon": "hardhat run scripts/deploy.js --network polygon"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.13",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.17"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.1.0"
+  }
+}
