@@ -79,6 +79,18 @@ constructor(address initialOwner, uint256 tier1Blocks, uint256 tier2Blocks, uint
 The deploy script passes the correct per-network tiers automatically. Requires
 `0 < tier1 < tier2 < tier3`, otherwise it reverts with `InvalidTierConfig`.
 
+## Deployments
+
+| Network | Address | Tiers | Explorer |
+| ------- | ------- | ----- | -------- |
+| Sepolia | `0x1A15Be833cFFb8FFB6fDE21c875d5Ee2fa58e388` | 5/10/15 | [verified source](https://sepolia.etherscan.io/address/0x1A15Be833cFFb8FFB6fDE21c875d5Ee2fa58e388#code) |
+
+The Sepolia contract was exercised end-to-end through the deployer wallet (see
+`scripts/sepolia-lifecycle.js`): buy-before-open reverted, a deployer buy during tier 1
+reverted with `MaxWalletExceeded` (proving the owner is not exempt), and sells across tiers
+burned 50% / 40% / 30% (`totalTaxBurned` = 24,000,000 RCT). Test liquidity was then withdrawn
+back to the deployer.
+
 ## Requirements
 
 - Node.js 18+ (tested on Node 22)

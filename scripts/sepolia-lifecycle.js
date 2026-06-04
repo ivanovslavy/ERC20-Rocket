@@ -1,21 +1,23 @@
 /**
- * Live lifecycle test on Sepolia against the deployed RocketToken.
+ * Live lifecycle test on Sepolia, driven entirely by the DEPLOYER wallet.
  *
- * Runs the full anti-bot flow on a real network with real Uniswap V2 and real blocks:
- *   1. metadata + supply
+ * Because there are no exempt/privileged addresses, the deployer is subject to the same
+ * guardian rules as everyone else - so the whole flow can be tested through the deployer
+ * wallet without creating any throwaway wallet (nothing gets lost), and it directly proves
+ * the owner is not privileged.
+ *
+ *   1. metadata + supply + immutable tiers
  *   2. guardian views before open
- *   3. add liquidity + setLp (+ once-only revert)
- *   4. buy before open -> reverts
- *   5. executeTrading
- *   6. tier 1: small buy OK, big buy (>1%) reverts (max wallet)
- *   7. sell taxes across tiers (50/40/30%) - burned (asserted against the real block)
- *   8. after tier 3: no limit, no tax
+ *   3. add liquidity
+ *   4. setLp (+ once-only revert)
+ *   5. buy before open -> reverts (TradingNotOpen)
+ *   6. executeTrading (+ once-only revert)
+ *   7. deployer buy during tier 1 -> reverts (MaxWalletExceeded; owner is not exempt)
+ *   8. deployer sells across tiers (50/40/30%) - taxes are burned
+ *   9. after tier 3: deployer sell has no tax, deployer buy succeeds (no limit)
+ *  10. remove liquidity back to the deployer; report ETH balances before/after
  *
- * The deployer is exempt, so a fresh non-exempt trader wallet is generated and funded.
- *
- * Run:
- *   node scripts/sepolia-lifecycle.js          (uses latest deployed/sepolia_*.json)
- *   CONTRACT=0x... node scripts/sepolia-lifecycle.js
+ * Run: node scripts/sepolia-lifecycle.js   (uses latest deployed/sepolia_*.json)
  */
 require("dotenv").config();
 const fs = require("fs");
@@ -32,15 +34,19 @@ const ROUTER_ABI = [
   "function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) payable returns (uint, uint, uint)",
   "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
   "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
+  "function removeLiquidityETH(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) returns (uint, uint)",
 ];
 const FACTORY_ABI = ["function getPair(address,address) view returns (address)"];
+const LP_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+];
 
 const DEADLINE = 9999999999n;
 const SUPPLY = ethers.parseUnits("100000000000", 18);
 const ONE_PERCENT = SUPPLY / 100n;
-
-// Sepolia tiers = 5 / 10 / 15 (must match the deployed contract).
 const TIERS = [5, 10, 15];
+
 function expectedSellBps(g) {
   if (g === 0 || g > TIERS[2]) return 0n;
   if (g <= TIERS[0]) return 5000n;
@@ -62,6 +68,21 @@ async function expectRevert(fn, label) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Retry a live transaction a few times - public Sepolia RPCs occasionally return
+// transient execution errors that succeed on a retry.
+async function sendRetry(fn, label, tries = 3) {
+  for (let i = 1; i <= tries; i++) {
+    try {
+      const tx = await fn();
+      return await tx.wait();
+    } catch (e) {
+      if (i === tries) throw e;
+      console.log(`   retry ${label} (${i}/${tries}): ${e.shortMessage || e.message}`);
+      await sleep(5000);
+    }
+  }
+}
+
 function loadAddress() {
   if (process.env.CONTRACT) return process.env.CONTRACT;
   const dir = path.join(__dirname, "..", "deployed");
@@ -69,8 +90,7 @@ function loadAddress() {
     .readdirSync(dir)
     .filter((f) => f.startsWith("sepolia_") && f.endsWith(".json"))
     .sort();
-  const info = JSON.parse(fs.readFileSync(path.join(dir, files[files.length - 1])));
-  return info.address;
+  return JSON.parse(fs.readFileSync(path.join(dir, files[files.length - 1]))).address;
 }
 
 async function main() {
@@ -85,103 +105,8 @@ async function main() {
 
   console.log("Contract:", ADDRESS);
   console.log("Deployer:", deployer.address);
-
-  // ---- 1. metadata + supply ----
-  console.log("\n[1] metadata + supply");
-  assert((await token.name()) === "Rocket", "name");
-  assert((await token.symbol()) === "RCT", "symbol");
-  assert((await token.totalSupply()) === SUPPLY, "totalSupply == 100B");
-  console.log("   name/symbol/supply OK, 100B minted to deployer");
-
-  // ---- 2. guardian views before open ----
-  console.log("\n[2] guardian views before open");
-  if (!(await token.tradingOpen())) {
-    assert((await token.guardianBlock()) === 0n, "guardianBlock 0");
-    assert((await token.currentMaxWallet()) === 0n, "maxWallet 0");
-    assert((await token.currentSellTaxBps()) === 0n, "sellTax 0");
-    console.log("   tradingOpen=false, all guardian views 0 OK");
-  } else {
-    console.log("   trading already open (re-run) - skipping pre-open checks");
-  }
-
-  // ---- create + fund a non-exempt trader ----
-  const trader = ethers.Wallet.createRandom().connect(provider);
-  console.log("\n[*] funding trader", trader.address);
-  await (await deployer.sendTransaction({ to: trader.address, value: ethers.parseEther("0.5") })).wait();
-
-  // ---- 3. add liquidity + setLp ----
-  console.log("\n[3] add liquidity + setLp");
-  let pair = await factory.getPair(tokenAddr, WETH);
-  if (pair === ethers.ZeroAddress) {
-    const tokenLiq = ethers.parseUnits("10000000000", 18); // 10B RCT
-    const ethLiq = ethers.parseEther("0.3");
-    await (await token.approve(ROUTER, ethers.MaxUint256)).wait();
-    await (
-      await router.addLiquidityETH(tokenAddr, tokenLiq, 0, 0, deployer.address, DEADLINE, { value: ethLiq })
-    ).wait();
-    pair = await factory.getPair(tokenAddr, WETH);
-    console.log("   liquidity added (10B RCT + 0.3 ETH)");
-  } else {
-    console.log("   pair already exists");
-  }
-  console.log("   pair:", pair);
-  if ((await token.lpPair()) === ethers.ZeroAddress) {
-    await (await token.setLp(pair)).wait();
-    await expectRevert(() => token.setLp(pair), "setLp second call (once-only)");
-  }
-  assert((await token.lpPair()) === pair, "lpPair set");
-  console.log("   setLp OK");
-
-  // ---- 4. buy before open reverts ----
-  if (!(await token.tradingOpen())) {
-    console.log("\n[4] buy before open reverts");
-    await expectRevert(
-      () =>
-        router
-          .connect(trader)
-          .swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], trader.address, DEADLINE, {
-            value: ethers.parseEther("0.005"),
-          }),
-      "buy before open"
-    );
-  }
-
-  // ---- 5. executeTrading ----
-  console.log("\n[5] executeTrading");
-  if (!(await token.tradingOpen())) {
-    await (await token.executeTrading()).wait();
-    await expectRevert(() => token.executeTrading(), "executeTrading second call (once-only)");
-  }
-  const openBlock = Number(await token.tradingOpenBlock());
-  assert((await token.tradingOpen()) === true, "tradingOpen true");
-  console.log("   trading open at block", openBlock);
-
-  // ---- 6. tier 1: small buy OK, big buy reverts ----
-  console.log("\n[6] tier 1 max wallet");
-  await (
-    await router
-      .connect(trader)
-      .swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], trader.address, DEADLINE, {
-        value: ethers.parseEther("0.005"),
-      })
-  ).wait();
-  const tbal = await token.balanceOf(trader.address);
-  assert(tbal > 0n && tbal <= ONE_PERCENT, "small buy under 1%");
-  console.log("   small buy:", ethers.formatUnits(tbal, 18), "RCT (< 1%) OK");
-  await expectRevert(
-    () =>
-      router
-        .connect(trader)
-        .swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], trader.address, DEADLINE, {
-          value: ethers.parseEther("0.2"),
-        }),
-    "big buy (>1%) max wallet"
-  );
-
-  // ---- 7. sell taxes across tiers ----
-  console.log("\n[7] sell taxes across tiers (burned)");
-  await (await token.connect(trader).approve(ROUTER, ethers.MaxUint256)).wait();
-  const sellAmount = ethers.parseUnits("20000000", 18); // 20M RCT per sell
+  const ethStart = await provider.getBalance(deployer.address);
+  console.log("ETH at start:", ethers.formatEther(ethStart));
 
   async function waitForBlock(target) {
     let bn = await provider.getBlockNumber();
@@ -193,52 +118,156 @@ async function main() {
     console.log(`   reached block ${bn}            `);
   }
 
-  // tier 1 (now), tier 2 (open+6 -> gb 7), tier 3 (open+11 -> gb 12)
+  // ---- 1. metadata + supply + tiers ----
+  console.log("\n[1] metadata + supply + tiers");
+  assert((await token.name()) === "Rocket", "name");
+  assert((await token.symbol()) === "RCT", "symbol");
+  assert((await token.totalSupply()) === SUPPLY, "supply 100B");
+  assert((await token.balanceOf(deployer.address)) === SUPPLY, "deployer holds 100B");
+  assert((await token.tier1Blocks()) === 5n && (await token.tier2Blocks()) === 10n && (await token.tier3Blocks()) === 15n, "tiers 5/10/15");
+  console.log("   name/symbol/supply OK; tiers 5/10/15 (immutable)");
+
+  // ---- 2. guardian views before open ----
+  console.log("\n[2] guardian views before open");
+  assert((await token.guardianBlock()) === 0n, "guardianBlock 0");
+  assert((await token.currentMaxWallet()) === 0n, "maxWallet 0");
+  assert((await token.currentSellTaxBps()) === 0n, "sellTax 0");
+  console.log("   all guardian views 0 OK");
+
+  // ---- 3. add liquidity (while lpPair is unset) ----
+  console.log("\n[3] add liquidity");
+  let pair = await factory.getPair(tokenAddr, WETH);
+  if (pair === ethers.ZeroAddress) {
+    const tokenLiq = ethers.parseUnits("5000000000", 18); // 5B RCT
+    const ethLiq = ethers.parseEther("0.05");
+    await sendRetry(() => token.approve(ROUTER, ethers.MaxUint256), "approve token");
+    await sendRetry(
+      () => router.addLiquidityETH(tokenAddr, tokenLiq, 0, 0, deployer.address, DEADLINE, { value: ethLiq }),
+      "add liquidity"
+    );
+    pair = await factory.getPair(tokenAddr, WETH);
+    console.log("   liquidity added (5B RCT + 0.05 ETH)");
+  } else {
+    console.log("   pair already exists");
+  }
+  console.log("   pair:", pair);
+
+  // ---- 4. setLp (+ once-only) ----
+  console.log("\n[4] setLp");
+  if ((await token.lpPair()) === ethers.ZeroAddress) {
+    await (await token.setLp(pair)).wait();
+    await expectRevert(() => token.setLp(pair), "setLp second call (once-only)");
+  }
+  assert((await token.lpPair()) === pair, "lpPair set");
+  console.log("   setLp OK");
+
+  // ---- 5. buy before open reverts ----
+  if (!(await token.tradingOpen())) {
+    console.log("\n[5] buy before open reverts");
+    await expectRevert(
+      () =>
+        router.swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], deployer.address, DEADLINE, {
+          value: ethers.parseEther("0.002"),
+        }),
+      "buy before open"
+    );
+  }
+
+  // ---- 6. executeTrading (+ once-only) ----
+  console.log("\n[6] executeTrading");
+  if (!(await token.tradingOpen())) {
+    await (await token.executeTrading()).wait();
+    await expectRevert(() => token.executeTrading(), "executeTrading second call (once-only)");
+  }
+  const openBlock = Number(await token.tradingOpenBlock());
+  assert((await token.tradingOpen()) === true, "tradingOpen");
+  console.log("   trading open at block", openBlock);
+
+  // ---- 7. deployer buy during tier 1 -> MaxWalletExceeded (owner not exempt) ----
+  console.log("\n[7] deployer buy during tier 1 -> MaxWalletExceeded (owner is not exempt)");
+  assert((await token.balanceOf(deployer.address)) > ONE_PERCENT, "deployer holds > 1%");
+  await expectRevert(
+    () =>
+      router.swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], deployer.address, DEADLINE, {
+        value: ethers.parseEther("0.002"),
+      }),
+    "deployer buy over max wallet"
+  );
+
+  // ---- 8. deployer sells across tiers (taxes burned) ----
+  console.log("\n[8] deployer sells across tiers (taxes burned)");
+  await (await token.approve(ROUTER, ethers.MaxUint256)).wait();
+  const sellAmount = ethers.parseUnits("20000000", 18); // 20M RCT
+
   for (const tierStart of [openBlock + 1, openBlock + 6, openBlock + 11]) {
     await waitForBlock(tierStart);
     const supplyBefore = await token.totalSupply();
     const burnedBefore = await token.totalTaxBurned();
-    const tx = await router
-      .connect(trader)
-      .swapExactTokensForETHSupportingFeeOnTransferTokens(sellAmount, 0, [tokenAddr, WETH], trader.address, DEADLINE);
-    const rec = await tx.wait();
+    const rec = await sendRetry(
+      () =>
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+          sellAmount,
+          0,
+          [tokenAddr, WETH],
+          deployer.address,
+          DEADLINE
+        ),
+      "tier sell"
+    );
     const g = rec.blockNumber - openBlock + 1;
     const expBurn = (sellAmount * expectedSellBps(g)) / 10000n;
     const burnedNow = (await token.totalTaxBurned()) - burnedBefore;
     const supplyDrop = supplyBefore - (await token.totalSupply());
     assert(burnedNow === expBurn, `burn at guardian block ${g}`);
     assert(supplyDrop === expBurn, `supply drop at guardian block ${g}`);
-    console.log(
-      `   guardian block ${g}: ${Number(expectedSellBps(g)) / 100}% -> burned ${ethers.formatUnits(expBurn, 18)} RCT`
-    );
+    console.log(`   guardian block ${g}: ${Number(expectedSellBps(g)) / 100}% -> burned ${ethers.formatUnits(expBurn, 18)} RCT`);
   }
 
-  // ---- 8. after tier 3 (block > 15): no limit, no tax ----
-  console.log("\n[8] after tier 3 (no limit, no tax)");
+  // ---- 9. after tier 3: no tax on sell, buy succeeds (no limit) ----
+  console.log("\n[9] after tier 3 (no tax, no limit)");
   await waitForBlock(openBlock + 16);
   const burnedBefore = await token.totalTaxBurned();
-  const tx = await router
-    .connect(trader)
-    .swapExactTokensForETHSupportingFeeOnTransferTokens(sellAmount, 0, [tokenAddr, WETH], trader.address, DEADLINE);
-  const rec = await tx.wait();
+  const rec = await sendRetry(
+    () => router.swapExactTokensForETHSupportingFeeOnTransferTokens(sellAmount, 0, [tokenAddr, WETH], deployer.address, DEADLINE),
+    "post-tier3 sell"
+  );
   const g = rec.blockNumber - openBlock + 1;
-  assert(g > TIERS[2], "guardian block > tier3");
+  assert(g > TIERS[2], "past tier3");
   assert((await token.totalTaxBurned()) === burnedBefore, "no burn after tier3");
   console.log(`   guardian block ${g}: sell with no tax / no burn OK`);
 
-  // ---- sweep trader leftover ETH back to deployer ----
-  try {
-    const bal = await provider.getBalance(trader.address);
-    const fee = ethers.parseEther("0.001");
-    if (bal > fee) {
-      await (
-        await trader.sendTransaction({ to: deployer.address, value: bal - fee })
-      ).wait();
-      console.log("\n[*] swept trader leftover ETH back to deployer");
-    }
-  } catch (_) {}
+  const balBeforeBuy = await token.balanceOf(deployer.address);
+  await sendRetry(
+    () =>
+      router.swapExactETHForTokensSupportingFeeOnTransferTokens(0, [WETH, tokenAddr], deployer.address, DEADLINE, {
+        value: ethers.parseEther("0.002"),
+      }),
+    "post-tier3 buy"
+  );
+  assert((await token.balanceOf(deployer.address)) > balBeforeBuy, "buy after tier3 succeeds (no limit)");
+  console.log("   deployer buy after tier3 succeeds (no max wallet)");
 
-  console.log("\nALL SEPOLIA LIFECYCLE CHECKS PASSED");
+  // ---- 10. remove liquidity back to the deployer ----
+  console.log("\n[10] remove liquidity back to deployer");
+  const lp = new ethers.Contract(pair, LP_ABI, deployer);
+  const lpBal = await lp.balanceOf(deployer.address);
+  const ethBeforeRemove = await provider.getBalance(deployer.address);
+  if (lpBal > 0n) {
+    await sendRetry(() => lp.approve(ROUTER, lpBal), "approve LP");
+    await sendRetry(() => router.removeLiquidityETH(tokenAddr, lpBal, 0, 0, deployer.address, DEADLINE), "remove liquidity");
+  }
+  const ethAfter = await provider.getBalance(deployer.address);
+  console.log("   ETH before remove:", ethers.formatEther(ethBeforeRemove));
+  console.log("   ETH after remove :", ethers.formatEther(ethAfter));
+
+  // ---- final report ----
+  console.log("\n=== FINAL ===");
+  console.log("totalSupply  :", ethers.formatUnits(await token.totalSupply(), 18), "RCT");
+  console.log("totalTaxBurned:", ethers.formatUnits(await token.totalTaxBurned(), 18), "RCT");
+  console.log("deployer RCT :", ethers.formatUnits(await token.balanceOf(deployer.address), 18));
+  console.log("deployer ETH :", ethers.formatEther(ethAfter));
+  console.log("ETH net (start -> end):", ethers.formatEther(ethAfter - ethStart), "(includes gas + LP round-trip)");
+  console.log("\nALL SEPOLIA LIFECYCLE CHECKS PASSED (driven by the deployer wallet)");
 }
 
 main().catch((e) => {
