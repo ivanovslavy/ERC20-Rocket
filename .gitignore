@@ -22,6 +22,10 @@ ignition/deployments/
 coverage/
 coverage.json
 
+# Internal working docs (not published)
+CLAUDE.md
+PROGRESS.md
+
 # Logove i vremenni faylove
 *.log
 npm-debug.log*

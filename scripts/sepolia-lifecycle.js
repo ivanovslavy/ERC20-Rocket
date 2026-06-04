@@ -9,7 +9,7 @@
  *   5. executeTrading
  *   6. tier 1: small buy OK, big buy (>1%) reverts (max wallet)
  *   7. sell taxes across tiers (50/40/30%) - burned (asserted against the real block)
- *   8. after block 30: no limit, no tax
+ *   8. after tier 3: no limit, no tax
  *
  * The deployer is exempt, so a fresh non-exempt trader wallet is generated and funded.
  *
@@ -39,10 +39,12 @@ const DEADLINE = 9999999999n;
 const SUPPLY = ethers.parseUnits("100000000000", 18);
 const ONE_PERCENT = SUPPLY / 100n;
 
+// Sepolia tiers = 5 / 10 / 15 (must match the deployed contract).
+const TIERS = [5, 10, 15];
 function expectedSellBps(g) {
-  if (g === 0 || g > 30) return 0n;
-  if (g <= 10) return 5000n;
-  if (g <= 20) return 4000n;
+  if (g === 0 || g > TIERS[2]) return 0n;
+  if (g <= TIERS[0]) return 5000n;
+  if (g <= TIERS[1]) return 4000n;
   return 3000n;
 }
 function assert(cond, msg) {
@@ -191,8 +193,8 @@ async function main() {
     console.log(`   reached block ${bn}            `);
   }
 
-  // tier 1 (now), tier 2 (open+10), tier 3 (open+20)
-  for (const tierStart of [openBlock + 1, openBlock + 10, openBlock + 20]) {
+  // tier 1 (now), tier 2 (open+6 -> gb 7), tier 3 (open+11 -> gb 12)
+  for (const tierStart of [openBlock + 1, openBlock + 6, openBlock + 11]) {
     await waitForBlock(tierStart);
     const supplyBefore = await token.totalSupply();
     const burnedBefore = await token.totalTaxBurned();
@@ -211,17 +213,17 @@ async function main() {
     );
   }
 
-  // ---- 8. after block 30: no limit, no tax ----
-  console.log("\n[8] after block 30 (no limit, no tax)");
-  await waitForBlock(openBlock + 30);
+  // ---- 8. after tier 3 (block > 15): no limit, no tax ----
+  console.log("\n[8] after tier 3 (no limit, no tax)");
+  await waitForBlock(openBlock + 16);
   const burnedBefore = await token.totalTaxBurned();
   const tx = await router
     .connect(trader)
     .swapExactTokensForETHSupportingFeeOnTransferTokens(sellAmount, 0, [tokenAddr, WETH], trader.address, DEADLINE);
   const rec = await tx.wait();
   const g = rec.blockNumber - openBlock + 1;
-  assert(g > 30, "guardian block > 30");
-  assert((await token.totalTaxBurned()) === burnedBefore, "no burn after block 30");
+  assert(g > TIERS[2], "guardian block > tier3");
+  assert((await token.totalTaxBurned()) === burnedBefore, "no burn after tier3");
   console.log(`   guardian block ${g}: sell with no tax / no burn OK`);
 
   // ---- sweep trader leftover ETH back to deployer ----

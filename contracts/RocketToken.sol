@@ -8,58 +8,70 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title RocketToken (RCT)
- * @notice Standarten ERC20 s anti-bot "guardian" politiki za sigursten launch.
+ * @notice Standard ERC20 with anti-bot "guardian" policies for a controlled launch.
  *
- *  - ERC20 + ERC20Burnable + Ownable + ReentrancyGuard
- *  - Supply: 100,000,000,000 RCT (100B), izcjalo mintnat po portfeila na deployera
- *  - setLp()           -> setva LP pair adresa (samo vednuj, onlyOwner)
- *  - executeTrading()  -> otvarja treidinga (samo vednuj, onlyOwner)
- *  - guardian buy/sell -> logika izpalniavana avtomatichno v _update() pri vseki transfer
- *  - burnRocket()      -> publichno burnvane na sobstveni tokeni
+ *  - ERC20 + ERC20Burnable + Ownable + ReentrancyGuard (OpenZeppelin v5)
+ *  - Supply: 100,000,000,000 RCT (100B), fully minted to the deployer
+ *  - There are NO exempt/privileged addresses: the owner is subject to the exact same
+ *    guardian rules as everyone else.
+ *  - setLp()          -> sets the LP pair address (once only, onlyOwner)
+ *  - executeTrading() -> opens trading (once only, onlyOwner)
+ *  - guardian buy/sell -> enforced automatically inside _update() on every transfer
+ *  - burnRocket()     -> public burn of own tokens
  *
- *  Anti-bot tier-i (broiat se ot bloka na otvarjane, otvarjashtiat blok = blok 1):
- *    Max wallet pri POKUPKA (from == lpPair):
- *      blok 1-10  -> max 1% ot total supply / portfeil
- *      blok 11-20 -> max 2% ot total supply / portfeil
- *      blok 21-30 -> max 3% ot total supply / portfeil
- *      ot blok 31 -> bez ogranichenie
- *    Taksa pri PRODAJBA (to == lpPair) - SABRANITE TAKSI SE IZGARJAT AVTOMATICHNO:
- *      blok 1-10  -> 50%
- *      blok 11-20 -> 40%
- *      blok 21-30 -> 30%
- *      ot blok 31 -> 0% (otpadat restrikciite)
+ *  Restriction tiers are measured in blocks from the opening block (opening block = 1)
+ *  and are set per network at deploy time via the constructor (immutable, unchangeable).
+ *  The intent is roughly 1 min / 2 min / 3 min windows, after which restrictions drop:
+ *    Max wallet on BUY (from == lpPair):
+ *      blocks 1..tier1            -> 1% of total supply / wallet
+ *      blocks tier1+1..tier2      -> 2% / wallet
+ *      blocks tier2+1..tier3      -> 3% / wallet
+ *      after tier3                -> no limit
+ *    Tax on SELL (to == lpPair) - collected tax is BURNED automatically:
+ *      blocks 1..tier1            -> 50%
+ *      blocks tier1+1..tier2      -> 40%
+ *      blocks tier2+1..tier3      -> 30%
+ *      after tier3                -> 0%
  *
- *  Taksite ot prodajbi ne se sabirat ot nikogo - te se burnvat (namaljavat total supply)
- *  cherez sashtia burn mehanizam kato burnRocket().
+ *  Launch order (no privileged addresses, so order matters):
+ *    1) add liquidity (while lpPair is still unset) 2) setLp 3) executeTrading
  */
 contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
-    /// @notice Maksimalen (i nachalen) supply: 100 miliarda RCT.
+    /// @notice Maximum (and initial) supply: 100 billion RCT.
     uint256 public constant MAX_SUPPLY = 100_000_000_000 * 1e18;
 
-    /// @notice Bazata za procentni smetki (10000 = 100%).
+    /// @notice Basis points base (10000 = 100%).
     uint256 public constant BPS = 10_000;
 
-    /// @notice Dali treidingat e otvoren.
+    /// @notice Block thresholds for the three restriction tiers (immutable, set at deploy).
+    uint256 public immutable tier1Blocks;
+    uint256 public immutable tier2Blocks;
+    uint256 public immutable tier3Blocks;
+
+    /// @notice Whether trading is open.
     bool public tradingOpen;
 
-    /// @notice Vatreshen flag dali LP-to e veche setnato.
+    /// @notice Internal flag whether the LP has already been set.
     bool private _lpSet;
 
-    /// @notice Adresat na likvidnostnia pair (DEX LP CA).
+    /// @notice The liquidity pair address (DEX LP CA).
     address public lpPair;
 
-    /// @notice Nomerat na bloka, v koito treidingat e otvoren.
+    /// @notice Block number at which trading was opened.
     uint256 public tradingOpenBlock;
 
-    /// @notice Obshto kolichestvo RCT izgoreni ot anti-bot prodajbeni taksi.
+    /// @notice Total RCT burned from anti-bot sell taxes.
     uint256 public totalTaxBurned;
 
-    /// @notice Adresi osvobodeni ot vsichki guardian restrikcii (owner, kontrakt, treasury, router...).
-    mapping(address => bool) public isExempt;
-
+    event TokenLaunched(
+        address indexed owner,
+        uint256 supply,
+        uint256 tier1Blocks,
+        uint256 tier2Blocks,
+        uint256 tier3Blocks
+    );
     event LpSet(address indexed lpPair);
     event TradingOpened(uint256 indexed blockNumber);
-    event ExemptUpdated(address indexed account, bool exempt);
     event RocketBurned(address indexed from, uint256 amount);
     event AntiBotTaxBurned(address indexed from, uint256 amount);
 
@@ -69,30 +81,41 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
     error TradingNotOpen();
     error ZeroAddress();
     error MaxWalletExceeded();
+    error InvalidTierConfig();
 
     /**
-     * @param initialOwner Adres, koito poluchava vsichki tokeni i stava owner/taxWallet.
+     * @param initialOwner Address that receives the whole supply and becomes owner.
+     * @param _tier1Blocks Block count for tier 1 (must be > 0).
+     * @param _tier2Blocks Block count for tier 2 (must be > tier1).
+     * @param _tier3Blocks Block count for tier 3 (must be > tier2).
      */
-    constructor(address initialOwner)
-        ERC20("Rocket", "RCT")
-        Ownable(initialOwner)
-    {
+    constructor(
+        address initialOwner,
+        uint256 _tier1Blocks,
+        uint256 _tier2Blocks,
+        uint256 _tier3Blocks
+    ) ERC20("Rocket", "RCT") Ownable(initialOwner) {
         if (initialOwner == address(0)) revert ZeroAddress();
+        if (_tier1Blocks == 0 || _tier2Blocks <= _tier1Blocks || _tier3Blocks <= _tier2Blocks) {
+            revert InvalidTierConfig();
+        }
 
-        isExempt[initialOwner] = true;
-        isExempt[address(this)] = true;
+        tier1Blocks = _tier1Blocks;
+        tier2Blocks = _tier2Blocks;
+        tier3Blocks = _tier3Blocks;
 
         _mint(initialOwner, MAX_SUPPLY);
+        emit TokenLaunched(initialOwner, MAX_SUPPLY, _tier1Blocks, _tier2Blocks, _tier3Blocks);
     }
 
     // ----------------------------------------------------------------
-    //  Owner upravlenie
+    //  Owner controls
     // ----------------------------------------------------------------
 
     /**
-     * @notice Setva LP pair adresa. Moje da se vika SAMO VEDNUJ.
+     * @notice Sets the LP pair address. Can be called ONLY ONCE.
      */
-    function setLp(address _lpPair) external onlyOwner {
+    function setLp(address _lpPair) external onlyOwner nonReentrant {
         if (_lpSet) revert LpAlreadySet();
         if (_lpPair == address(0)) revert ZeroAddress();
         lpPair = _lpPair;
@@ -101,10 +124,10 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Otvarja treidinga i startira guardian taimera. Moje da se vika SAMO VEDNUJ.
-     * @dev Iziskva LP-to da e veche setnato.
+     * @notice Opens trading and starts the guardian timer. Can be called ONLY ONCE.
+     * @dev Requires the LP to have been set.
      */
-    function executeTrading() external onlyOwner {
+    function executeTrading() external onlyOwner nonReentrant {
         if (tradingOpen) revert TradingAlreadyOpen();
         if (!_lpSet) revert LpNotSet();
         tradingOpen = true;
@@ -112,24 +135,47 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
         emit TradingOpened(block.number);
     }
 
-    /**
-     * @notice Dobavja / premahva adres ot exempt spisaka (router, treasury, vesting...).
-     */
-    function setExempt(address account, bool exempt) external onlyOwner {
-        isExempt[account] = exempt;
-        emit ExemptUpdated(account, exempt);
-    }
-
     // ----------------------------------------------------------------
     //  Burn
     // ----------------------------------------------------------------
 
     /**
-     * @notice Burnva `amount` tokeni ot vikashtia. Namaljava total supply.
+     * @notice Burns `amount` tokens from the caller. Reduces total supply.
      */
     function burnRocket(uint256 amount) external nonReentrant {
         _burn(_msgSender(), amount);
         emit RocketBurned(_msgSender(), amount);
+    }
+
+    /// @dev ERC20Burnable.burn with a reentrancy guard.
+    function burn(uint256 value) public override nonReentrant {
+        super.burn(value);
+    }
+
+    /// @dev ERC20Burnable.burnFrom with a reentrancy guard.
+    function burnFrom(address account, uint256 value) public override nonReentrant {
+        super.burnFrom(account, value);
+    }
+
+    // ----------------------------------------------------------------
+    //  Guarded ERC20 entry points
+    // ----------------------------------------------------------------
+
+    function transfer(address to, uint256 value) public override nonReentrant returns (bool) {
+        return super.transfer(to, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value)
+        public
+        override
+        nonReentrant
+        returns (bool)
+    {
+        return super.transferFrom(from, to, value);
+    }
+
+    function approve(address spender, uint256 value) public override nonReentrant returns (bool) {
+        return super.approve(spender, value);
     }
 
     // ----------------------------------------------------------------
@@ -137,7 +183,7 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
     // ----------------------------------------------------------------
 
     /**
-     * @notice Tekusht "guardian blok" (otvarjashtiat blok = 1). 0 ako treidingat ne e otvoren.
+     * @notice Current "guardian block" (opening block = 1). 0 if trading is not open.
      */
     function guardianBlock() public view returns (uint256) {
         if (!tradingOpen) return 0;
@@ -145,52 +191,52 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Tekusht max balans na portfeil pri pokupka. 0 oznachava "bez limit".
+     * @notice Current max wallet balance on buy. 0 means "no limit".
      */
     function currentMaxWallet() public view returns (uint256) {
         uint256 b = guardianBlock();
-        if (b == 0 || b > 30) return 0; // predi otvarjane ili sled blok 30 -> bez limit
-        if (b <= 10) return (MAX_SUPPLY * 1) / 100; // 1%
-        if (b <= 20) return (MAX_SUPPLY * 2) / 100; // 2%
-        return (MAX_SUPPLY * 3) / 100;              // 3% (blok 21-30)
+        if (b == 0 || b > tier3Blocks) return 0;
+        if (b <= tier1Blocks) return (MAX_SUPPLY * 1) / 100; // 1%
+        if (b <= tier2Blocks) return (MAX_SUPPLY * 2) / 100; // 2%
+        return (MAX_SUPPLY * 3) / 100; // 3%
     }
 
     /**
-     * @notice Tekushta prodajbena taksa v bps (10000 = 100%).
+     * @notice Current sell tax in bps (10000 = 100%).
      */
     function currentSellTaxBps() public view returns (uint256) {
         uint256 b = guardianBlock();
-        if (b == 0 || b > 30) return 0;
-        if (b <= 10) return 5_000; // 50%
-        if (b <= 20) return 4_000; // 40%
-        return 3_000;              // 30% (blok 21-30)
+        if (b == 0 || b > tier3Blocks) return 0;
+        if (b <= tier1Blocks) return 5_000; // 50%
+        if (b <= tier2Blocks) return 4_000; // 40%
+        return 3_000; // 30%
     }
 
     // ----------------------------------------------------------------
-    //  Transfer hook s guardian logikata (OZ v5 _update)
+    //  Transfer hook with the guardian logic (OZ v5 _update)
     // ----------------------------------------------------------------
 
-    function _update(address from, address to, uint256 value)
-        internal
-        override
-    {
-        // Mint / burn (from==0 ili to==0) - bez restrikcii.
+    function _update(address from, address to, uint256 value) internal override {
+        // Mint / burn (from==0 or to==0) - no restrictions.
         if (from == address(0) || to == address(0)) {
             super._update(from, to, value);
             return;
         }
 
-        // Exempt adresi (owner, kontrakt, router, treasury) - bez restrikcii.
-        if (isExempt[from] || isExempt[to]) {
+        address pair = lpPair;
+        bool fromPair = pair != address(0) && from == pair;
+        bool toPair = pair != address(0) && to == pair;
+
+        if (!tradingOpen) {
+            // Before trading opens, no trading against the pair is allowed.
+            // Liquidity is added while lpPair is still unset, so this does not block it.
+            if (fromPair || toPair) revert TradingNotOpen();
             super._update(from, to, value);
             return;
         }
 
-        // Predi otvarjane na treidinga - samo exempt adresi mogat da prashtat tokeni.
-        if (!tradingOpen) revert TradingNotOpen();
-
-        // ---- GUARDIAN BUY: pokupka ot LP (from == lpPair) ----
-        if (from == lpPair) {
+        // ---- GUARDIAN BUY: from == lpPair ----
+        if (fromPair) {
             uint256 maxWallet = currentMaxWallet();
             if (maxWallet != 0 && balanceOf(to) + value > maxWallet) {
                 revert MaxWalletExceeded();
@@ -199,15 +245,13 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
             return;
         }
 
-        // ---- GUARDIAN SELL: prodajba kam LP (to == lpPair) ----
-        // Sabranata taksa NE otiva v portfeil - izgarja se (namaljava total supply).
-        if (to == lpPair) {
+        // ---- GUARDIAN SELL: to == lpPair (collected tax is BURNED) ----
+        if (toPair) {
             uint256 taxBps = currentSellTaxBps();
             if (taxBps != 0) {
                 uint256 taxAmount = (value * taxBps) / BPS;
                 if (taxAmount != 0) {
-                    // Burn na taksata: prehvarljane kam address(0) namaljava totalSupply.
-                    super._update(from, address(0), taxAmount);
+                    super._update(from, address(0), taxAmount); // burn
                     totalTaxBurned += taxAmount;
                     emit AntiBotTaxBurned(from, taxAmount);
                 }
@@ -218,7 +262,7 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
             return;
         }
 
-        // ---- Normalen wallet-to-wallet transfer ----
+        // ---- Normal wallet-to-wallet transfer ----
         super._update(from, to, value);
     }
 }

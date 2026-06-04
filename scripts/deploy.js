@@ -14,6 +14,17 @@ const { makeSigner } = require("./rpc");
  *   npx hardhat run scripts/deploy.js --network <localhost|sepolia|ethereum|base|bnb|polygon>
  */
 
+// Per-network restriction tiers (block counts), targeting ~1min / 2min / 3min windows.
+const TIERS = {
+  ethereum: [5, 10, 15],
+  sepolia: [5, 10, 15],
+  polygon: [20, 40, 60],
+  bnb: [20, 40, 60],
+  base: [30, 60, 90],
+  localhost: [5, 10, 15],
+  hardhat: [5, 10, 15],
+};
+
 // Za jivi mreji - signer s RPC fallback; za lokalni - vgradeniat hardhat signer.
 async function getDeploySigner(network) {
   if (network === "localhost" || network === "hardhat") {
@@ -34,9 +45,14 @@ async function main() {
   console.log(` Balance : ${hre.ethers.formatEther(balance)} (native)`);
   console.log("====================================================");
 
+  const tiers = TIERS[network];
+  if (!tiers) throw new Error(`No tier config for network "${network}"`);
+  const [t1, t2, t3] = tiers;
+  console.log(` Tiers   : ${t1} / ${t2} / ${t3} blocks`);
+
   // --- Deploy ---
   const Rocket = await hre.ethers.getContractFactory("RocketToken", deployer);
-  const rocket = await Rocket.deploy(deployer.address);
+  const rocket = await Rocket.deploy(deployer.address, t1, t2, t3);
   await rocket.waitForDeployment();
 
   const address = await rocket.getAddress();
@@ -63,7 +79,8 @@ async function main() {
     deployer: deployer.address,
     txHash: deployTx ? deployTx.hash : null,
     timestamp: now.toISOString(),
-    constructorArgs: [deployer.address],
+    tiers: { tier1Blocks: t1, tier2Blocks: t2, tier3Blocks: t3 },
+    constructorArgs: [deployer.address, t1, t2, t3],
   };
 
   const file = path.join(dir, `${network}_${stamp}.json`);
@@ -82,7 +99,7 @@ async function main() {
   try {
     await hre.run("verify:verify", {
       address,
-      constructorArguments: [deployer.address],
+      constructorArguments: [deployer.address, t1, t2, t3],
     });
     console.log(" Verifikaciata uspeshna.");
   } catch (err) {
@@ -92,7 +109,7 @@ async function main() {
     } else {
       console.error(" Verifikaciata ne uspja:", msg);
       console.error(" Mojesh da ja pusnesh rachno sas:");
-      console.error(`   npx hardhat verify --network ${network} ${address} ${deployer.address}`);
+      console.error(`   npx hardhat verify --network ${network} ${address} ${deployer.address} ${t1} ${t2} ${t3}`);
     }
   }
 }

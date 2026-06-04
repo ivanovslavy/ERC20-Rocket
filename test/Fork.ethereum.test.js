@@ -33,11 +33,14 @@ const DEADLINE = 9999999999n; // dalech v budeshteto
 const SUPPLY = ethers.parseUnits("100000000000", 18); // 100B (= MAX_SUPPLY)
 const ONE_PERCENT = SUPPLY / 100n;
 
-// JS ogledalo na guardian logikata
+// Tier blocks (must match the deploy below): ethereum = 5 / 10 / 15.
+const TIERS = [5, 10, 15];
+
+// JS mirror of the guardian logic.
 function expectedSellBps(g) {
-  if (g === 0 || g > 30) return 0n;
-  if (g <= 10) return 5000n;
-  if (g <= 20) return 4000n;
+  if (g === 0 || g > TIERS[2]) return 0n;
+  if (g <= TIERS[0]) return 5000n;
+  if (g <= TIERS[1]) return 4000n;
   return 3000n;
 }
 
@@ -72,7 +75,7 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     [owner, buyer1, buyer2] = await ethers.getSigners();
 
     const Rocket = await ethers.getContractFactory("RocketToken");
-    token = await Rocket.connect(owner).deploy(owner.address);
+    token = await Rocket.connect(owner).deploy(owner.address, ...TIERS);
     await token.waitForDeployment();
     console.log("    RocketToken deployed:", await token.getAddress());
 
@@ -165,7 +168,7 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     await (await token.connect(buyer1).approve(ROUTER, ethers.MaxUint256)).wait();
     const sellAmount = ethers.parseUnits("10000000", 18); // 10M RCT na prodajba
 
-    for (const targetG of [5, 15, 25]) {
+    for (const targetG of [3, 8, 13]) {
       await mineUntilGuardian(targetG);
 
       const supplyBefore = await token.totalSupply();
@@ -198,9 +201,9 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     }
   });
 
-  it("6. SLED BLOK 30: bez max wallet i bez taksa (normalno)", async function () {
+  it("6. SLED tier3 (blok > 15): bez max wallet i bez taksa (normalno)", async function () {
     const tokenAddr = await token.getAddress();
-    await mineUntilGuardian(35);
+    await mineUntilGuardian(18);
 
     // golyama pokupka sega minava (bez limit) i balansat moje da nadvishi 1%
     await (
@@ -236,6 +239,6 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     ).wait();
 
     expect(await token.totalTaxBurned()).to.equal(burnedBefore); // bez nov burn
-    console.log("    prodajba sled blok 30: bez taksa, bez burn - OK");
+    console.log("    prodajba sled tier3: bez taksa, bez burn - OK");
   });
 });

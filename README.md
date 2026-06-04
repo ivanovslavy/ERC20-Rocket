@@ -13,44 +13,71 @@ Built with Hardhat and OpenZeppelin v5.
 
 ## Anti-bot policies
 
-All limits are measured in blocks counted from the block in which trading is opened
-(the opening block is block 1). They are enforced automatically inside the ERC20
-`_update` hook on every transfer.
+There are no privileged or exempt addresses. The owner is subject to the exact same rules
+as everyone else.
+
+Limits are measured in blocks counted from the block in which trading is opened (the opening
+block is block 1) and are enforced automatically inside the ERC20 `_update` hook on every
+transfer. The tier thresholds (`tier1`, `tier2`, `tier3`) are set per network at deploy time
+and are **immutable** (constructor arguments, cannot be changed).
 
 Max wallet on BUY (transfer from the LP pair):
 
-| Blocks after open | Max balance per wallet |
-| ----------------- | ---------------------- |
-| 1 - 10            | 1% of total supply     |
-| 11 - 20           | 2% of total supply     |
-| 21 - 30           | 3% of total supply     |
-| from 31           | no limit               |
+| Block window        | Max balance per wallet |
+| ------------------- | ---------------------- |
+| 1 .. tier1          | 1% of total supply     |
+| tier1+1 .. tier2    | 2% of total supply     |
+| tier2+1 .. tier3    | 3% of total supply     |
+| after tier3         | no limit               |
 
-Tax on SELL (transfer to the LP pair). The collected tax is not sent to any wallet,
-it is burned (total supply decreases):
+Tax on SELL (transfer to the LP pair). The collected tax is not sent to any wallet, it is
+burned (total supply decreases):
 
-| Blocks after open | Sell tax (burned) |
-| ----------------- | ----------------- |
-| 1 - 10            | 50%               |
-| 11 - 20           | 40%               |
-| 21 - 30           | 30%               |
-| from 31           | 0%                |
+| Block window        | Sell tax (burned) |
+| ------------------- | ----------------- |
+| 1 .. tier1          | 50%               |
+| tier1+1 .. tier2    | 40%               |
+| tier2+1 .. tier3    | 30%               |
+| after tier3         | 0%                |
 
-Exempt addresses (owner, the contract itself, and any address added via `setExempt`)
-bypass all restrictions. Before trading is opened, only exempt addresses can move tokens.
+The tier blocks target roughly 1 min / 2 min / 3 min windows, after which restrictions drop:
+
+| Network            | tier1 | tier2 | tier3 |
+| ------------------ | ----- | ----- | ----- |
+| Ethereum, Sepolia  | 5     | 10    | 15    |
+| Polygon, BNB       | 20    | 40    | 60    |
+| Base               | 30    | 60    | 90    |
+
+Before `executeTrading()`, trading against the pair is blocked (any transfer where the pair is
+`from` or `to`); normal wallet-to-wallet transfers are allowed. Liquidity is therefore added
+while `lpPair` is still unset (see the launch order below).
 
 ## Public functions
 
-| Function                  | Access                     | Description                                            |
-| ------------------------- | -------------------------- | ------------------------------------------------------ |
-| `setLp(address)`          | onlyOwner, once            | Sets the LP pair (DEX) address                         |
-| `executeTrading()`        | onlyOwner, once            | Opens trading and starts the guardian timer            |
-| `setExempt(address,bool)` | onlyOwner                  | Adds/removes an address from the exemption list        |
-| `burnRocket(uint256)`     | public, nonReentrant       | Burns the caller's own tokens                          |
-| `guardianBlock()`         | view                       | Current guardian block (0 if trading is not open)      |
-| `currentMaxWallet()`      | view                       | Current max wallet on buy (0 means no limit)           |
-| `currentSellTaxBps()`     | view                       | Current sell tax in basis points (10000 = 100%)        |
-| `totalTaxBurned()`        | view                       | Total RCT burned from anti-bot sell taxes              |
+| Function              | Access                            | Description                                       |
+| --------------------- | --------------------------------- | ------------------------------------------------- |
+| `setLp(address)`      | onlyOwner, once, nonReentrant     | Sets the LP pair (DEX) address                    |
+| `executeTrading()`    | onlyOwner, once, nonReentrant     | Opens trading and starts the guardian timer       |
+| `burnRocket(uint256)` | public, nonReentrant              | Burns the caller's own tokens                     |
+| `guardianBlock()`     | view                              | Current guardian block (0 if trading is not open) |
+| `currentMaxWallet()`  | view                              | Current max wallet on buy (0 means no limit)      |
+| `currentSellTaxBps()` | view                              | Current sell tax in basis points (10000 = 100%)   |
+| `totalTaxBurned()`    | view                              | Total RCT burned from anti-bot sell taxes         |
+| `tier1/2/3Blocks()`   | view (immutable)                  | The per-network tier block thresholds             |
+
+`transfer`, `transferFrom`, `approve`, `burn` and `burnFrom` are reentrancy-guarded. Every
+state-changing function emits an event, and every revert uses a named custom error
+(`LpAlreadySet`, `LpNotSet`, `TradingAlreadyOpen`, `TradingNotOpen`, `ZeroAddress`,
+`MaxWalletExceeded`, `InvalidTierConfig`).
+
+## Constructor
+
+```solidity
+constructor(address initialOwner, uint256 tier1Blocks, uint256 tier2Blocks, uint256 tier3Blocks)
+```
+
+The deploy script passes the correct per-network tiers automatically. Requires
+`0 < tier1 < tier2 < tier3`, otherwise it reverts with `InvalidTierConfig`.
 
 ## Requirements
 
@@ -104,36 +131,29 @@ Each deployment writes a record to `deployed/<network>_<date-time>.json` contain
 address, chain id, deployer, tx hash and constructor arguments. Verification runs
 automatically for every network except `localhost` / `hardhat`.
 
-## Deployments
+## Mainnet fork test
 
-| Network | Address | Explorer |
-| ------- | ------- | -------- |
-| Sepolia | `0x69dC03236b1ee798C336a51Df78DcA3EA32a0258` | [verified source](https://sepolia.etherscan.io/address/0x69dC03236b1ee798C336a51Df78DcA3EA32a0258#code) |
+The full lifecycle is covered by an end-to-end test that forks Ethereum mainnet and uses the
+real Uniswap V2 router and factory, so no real funds are spent. It exercises: deploy, liquidity
+provision and `setLp`, a buy attempt before trading is open (must revert), opening trading, the
+tier-1 max-wallet limit, sell taxes (50/40/30%, burned), and normal behaviour after tier3 (no
+limit, no tax).
+
+```bash
+FORK_URL="https://rpc.ankr.com/eth/<ANKR_KEY>" npx hardhat test test/Fork.ethereum.test.js
+```
 
 ## Live test on Sepolia
 
-`scripts/sepolia-lifecycle.js` runs the full lifecycle against the deployed contract on
-Sepolia using the real Uniswap V2. It generates and funds a fresh non-exempt trader,
-exercises add-liquidity, `setLp`, buy-before-open (revert), `executeTrading`, the tier-1
-max-wallet limit, sell taxes across tiers (verified against the real block), and normal
-behaviour after block 30, then sweeps the trader's leftover ETH back. It waits for real
-blocks, so it takes a few minutes.
+`scripts/sepolia-lifecycle.js` runs the same lifecycle against a contract deployed on Sepolia
+using the real Uniswap V2. It generates and funds a fresh trader wallet, exercises the whole
+flow (verified against the real block), and sweeps the trader's leftover ETH back. It waits for
+real blocks, so it takes a few minutes. `scripts/sepolia-recover.js` withdraws test liquidity
+from a deployed token back to the deployer.
 
 ```bash
 node scripts/sepolia-lifecycle.js          # uses the latest deployed/sepolia_*.json
 CONTRACT=0x... node scripts/sepolia-lifecycle.js
-```
-
-## Mainnet fork test
-
-The full lifecycle is covered by an end-to-end test that forks Ethereum mainnet and uses
-the real Uniswap V2 router and factory, so no real funds are spent. It exercises: deploy,
-liquidity provision and `setLp`, a buy attempt before trading is open (must revert),
-opening trading, the tier-1 max-wallet limit, sell taxes (50/40/30%, burned), and normal
-behaviour after block 30 (no limit, no tax).
-
-```bash
-FORK_URL="https://rpc.ankr.com/eth/<ANKR_KEY>" npx hardhat test test/Fork.ethereum.test.js
 ```
 
 ## Project structure
@@ -142,6 +162,8 @@ FORK_URL="https://rpc.ankr.com/eth/<ANKR_KEY>" npx hardhat test test/Fork.ethere
 contracts/RocketToken.sol      Token contract with the guardian logic
 scripts/rpc.js                 Ankr RPC fallback provider/signer
 scripts/deploy.js              Deploy + record + verify
+scripts/sepolia-lifecycle.js   Live Sepolia end-to-end test
+scripts/sepolia-recover.js     Withdraw test liquidity back to the deployer
 test/RocketToken.test.js       Unit tests
 test/Fork.ethereum.test.js     Mainnet fork end-to-end test
 hardhat.config.js              Networks + Etherscan V2 config
@@ -150,8 +172,10 @@ deployed/                      Deployment records (git-ignored)
 
 ## Launch order
 
-1. Deploy the contract.
-2. Add liquidity on the DEX and obtain the LP pair address.
+Because there are no privileged addresses, the order matters:
+
+1. Deploy the contract (the deploy script sets the per-network tier blocks).
+2. Add liquidity on the DEX (while `lpPair` is still unset) and obtain the pair address.
 3. Call `setLp(pair)` (once).
 4. Call `executeTrading()` (once) to open trading and start the guardian timer.
 
