@@ -3,6 +3,12 @@
 An ERC20 token with on-chain anti-bot ("guardian") policies for a controlled DEX launch.
 Built with Hardhat and OpenZeppelin v5.
 
+> **Requires a Uniswap V2 LP (mandatory).** The guardian buy/sell detection and the
+> fee-on-transfer sell-tax burn only work on a Uniswap V2 (or V2-style) liquidity pair.
+> Uniswap V3/V4 are **not** supported (V3 reverts fee-on-transfer swaps with `IIA`; V4 holds
+> liquidity in a singleton `PoolManager`, so the `from/to == lpPair` detection does not apply).
+> `setLp(...)` must point to a V2-style pair. See [Why Uniswap V2](#why-uniswap-v2).
+
 ## Overview
 
 - Name / symbol: `Rocket` / `RCT`, 18 decimals
@@ -10,6 +16,7 @@ Built with Hardhat and OpenZeppelin v5.
 - Base: ERC20, ERC20Burnable, Ownable, ReentrancyGuard (OpenZeppelin v5)
 - Solidity 0.8.24, optimizer enabled (200 runs)
 - Main contract: `contracts/RocketToken.sol`
+- **Venue: Uniswap V2 (or V2-style) only — see [Why Uniswap V2](#why-uniswap-v2)**
 
 ## Anti-bot policies
 
@@ -187,9 +194,32 @@ deployed/                      Deployment records (git-ignored)
 Because there are no privileged addresses, the order matters:
 
 1. Deploy the contract (the deploy script sets the per-network tier blocks).
-2. Add liquidity on the DEX (while `lpPair` is still unset) and obtain the pair address.
-3. Call `setLp(pair)` (once).
+2. Add liquidity on a **Uniswap V2 (or V2-style)** DEX (while `lpPair` is still unset) and
+   obtain the pair address.
+3. Call `setLp(pair)` (once) with the V2 pair address.
 4. Call `executeTrading()` (once) to open trading and start the guardian timer.
+
+## Why Uniswap V2
+
+A Uniswap V2 (or V2-style) liquidity pair is **mandatory** for this token. The anti-bot logic
+depends on two things that only V2-style pools provide:
+
+- **Buy/sell detection.** A V2 pair is a single contract that holds the token as a plain ERC20
+  balance, so `from == lpPair` (buy) and `to == lpPair` (sell) map directly to trades.
+- **Fee-on-transfer support.** The sell-tax burn reduces the amount that reaches the pool; V2
+  supports this via its `swap...SupportingFeeOnTransferTokens` functions and `sync()`/reserves.
+
+Uniswap V3/V4 are **not** supported:
+
+- **V3** reverts fee-on-transfer swaps — the swap callback requires the exact input amount, so
+  any sell tax makes the swap fail with `IIA` (Insufficient Input Amount). On V3 you could only
+  run revert-based limits, not a tax.
+- **V4** keeps all liquidity in a singleton `PoolManager` with flash accounting, so there is no
+  per-pair contract and the `from/to == lpPair` detection does not apply; the equivalent logic
+  would have to live in a V4 hook instead.
+
+V2 is also the venue where launch snipers and sandwich bots are most active, so the guardian
+policies are applied exactly where the threat is highest.
 
 ## License
 

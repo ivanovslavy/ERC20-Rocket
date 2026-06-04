@@ -35,6 +35,14 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *
  *  Launch order (no privileged addresses, so order matters):
  *    1) add liquidity (while lpPair is still unset) 2) setLp 3) executeTrading
+ *
+ *  REQUIRED VENUE: a Uniswap V2 (or V2-style) liquidity pair is MANDATORY. The guardian
+ *  buy/sell detection (from/to == lpPair) and the fee-on-transfer sell-tax burn only work on
+ *  V2-style pools, which hold the token as a plain ERC20 balance and support
+ *  fee-on-transfer swaps. Uniswap V3/V4 are NOT supported: V3 reverts fee-on-transfer swaps
+ *  (the swap callback requires the exact input amount, 'IIA'), and V4 keeps liquidity in a
+ *  singleton PoolManager, so `lpPair` detection does not apply. `setLp` must point to a
+ *  V2-style pair address.
  */
 contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
     /// @notice Maximum (and initial) supply: 100 billion RCT.
@@ -114,6 +122,8 @@ contract RocketToken is ERC20, ERC20Burnable, Ownable, ReentrancyGuard {
 
     /**
      * @notice Sets the LP pair address. Can be called ONLY ONCE.
+     * @dev MUST be a Uniswap V2 (or V2-style) pair. V3/V4 are not supported - see the
+     *      contract-level notes.
      */
     function setLp(address _lpPair) external onlyOwner nonReentrant {
         if (_lpSet) revert LpAlreadySet();
