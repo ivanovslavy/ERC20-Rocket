@@ -1,11 +1,11 @@
 /**
- * RPC fallback logika s Ankr API klyuchove.
+ * RPC fallback logic using Ankr API keys.
  *
- * Chete ANKR_API_KEYS ot .env (zapeti-razdeleni). Za vsjaka veriga gradi spisak
- * ot RPC URL-i - po edin za vseki klyuch. Ako purviat RPC feilne, ethers
- * FallbackProvider avtomatichno minava na sledvashtia (quorum = 1).
+ * Reads ANKR_API_KEYS from .env (comma-separated). For each chain it builds a list of
+ * RPC URLs - one per key. If the first RPC fails, the ethers FallbackProvider moves to
+ * the next one automatically (quorum = 1).
  *
- * Optsionalen vanshen RPC (<NETWORK>_RPC_URL) se slaga s nai-visok prioritet.
+ * An optional explicit RPC (<NETWORK>_RPC_URL) is given the highest priority.
  */
 const { ethers } = require("ethers");
 
@@ -14,7 +14,7 @@ const ANKR_KEYS = (process.env.ANKR_API_KEYS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// network ime -> Ankr path + chainId
+// network name -> Ankr path + chainId
 const NETWORKS = {
   ethereum: { path: "eth", chainId: 1 },
   sepolia: { path: "eth_sepolia", chainId: 11155111 },
@@ -23,23 +23,23 @@ const NETWORKS = {
   polygon: { path: "polygon", chainId: 137 },
 };
 
-/** Vrashta masiv ot Ankr RPC URL-i za dadena veriga (po edin za vseki klyuch). */
+/** Returns the array of Ankr RPC URLs for a chain (one per key). */
 function ankrUrls(networkName) {
   const cfg = NETWORKS[networkName];
   if (!cfg) return [];
   return ANKR_KEYS.map((key) => `https://rpc.ankr.com/${cfg.path}/${key}`);
 }
 
-/** Vrashta purvia Ankr URL za veriga (za hardhat.config / verify). */
+/** Returns the first Ankr URL for a chain (used by hardhat.config / verify). */
 function primaryUrl(networkName) {
   const urls = ankrUrls(networkName);
   return urls.length ? urls[0] : "";
 }
 
-/** Suzdava FallbackProvider s prioritet po reda na klyuchovete. */
+/** Creates a FallbackProvider with priority following the order of the keys. */
 function makeProvider(networkName) {
   const cfg = NETWORKS[networkName];
-  if (!cfg) throw new Error(`Nepoznata mreja: ${networkName}`);
+  if (!cfg) throw new Error(`Unknown network: ${networkName}`);
 
   const urls = [];
   const envUrl = process.env[`${networkName.toUpperCase()}_RPC_URL`];
@@ -48,25 +48,25 @@ function makeProvider(networkName) {
 
   if (urls.length === 0) {
     throw new Error(
-      `Nyama RPC za ${networkName}. Zaredi ANKR_API_KEYS ili ${networkName.toUpperCase()}_RPC_URL v .env`
+      `No RPC for ${networkName}. Set ANKR_API_KEYS or ${networkName.toUpperCase()}_RPC_URL in .env`
     );
   }
 
   const configs = urls.map((url, i) => ({
     provider: new ethers.JsonRpcProvider(url, cfg.chainId),
-    priority: i + 1, // po-malko = po-visok prioritet
+    priority: i + 1, // lower = higher priority
     stallTimeout: 2500,
     weight: 1,
   }));
 
-  // quorum 1 -> stiga edin uspeshen otgovor; pri greshka minava nadolu po prioritet
+  // quorum 1 -> a single successful response is enough; on error it falls down by priority
   return new ethers.FallbackProvider(configs, cfg.chainId, { quorum: 1 });
 }
 
-/** Wallet signer, svurzan kam fallback provider-a. */
+/** Wallet signer connected to the fallback provider. */
 function makeSigner(networkName) {
   const pk = process.env.PRIVATE_KEY;
-  if (!pk) throw new Error("PRIVATE_KEY lipsva v .env");
+  if (!pk) throw new Error("PRIVATE_KEY missing in .env");
   return new ethers.Wallet(pk, makeProvider(networkName));
 }
 

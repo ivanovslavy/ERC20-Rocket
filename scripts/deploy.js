@@ -4,13 +4,13 @@ const path = require("path");
 const { makeSigner } = require("./rpc");
 
 /**
- * Deploy script za RocketToken.
- *  - deplova kontrakta s deployera kato initialOwner
- *  - polzva RPC fallback (Ankr klyuchove) za jivi mreji
- *  - zapisva deploy info v ./deployed/<network>_<data-chas>.json
- *  - pravi verifikacia (osven na localhost/hardhat)
+ * Deploy script for RocketToken.
+ *  - deploys the contract with the deployer as initialOwner
+ *  - uses the RPC fallback (Ankr keys) for live networks
+ *  - writes the deploy info to ./deployed/<network>_<date-time>.json
+ *  - verifies the contract (except on localhost/hardhat)
  *
- * Upotreba:
+ * Usage:
  *   npx hardhat run scripts/deploy.js --network <localhost|sepolia|ethereum|base|bnb|polygon>
  */
 
@@ -25,7 +25,7 @@ const TIERS = {
   hardhat: [5, 10, 15],
 };
 
-// Za jivi mreji - signer s RPC fallback; za lokalni - vgradeniat hardhat signer.
+// For live networks - a signer with RPC fallback; for local - the built-in hardhat signer.
 async function getDeploySigner(network) {
   if (network === "localhost" || network === "hardhat") {
     const [s] = await hre.ethers.getSigners();
@@ -62,7 +62,7 @@ async function main() {
   console.log(`\n RocketToken (RCT) deployed at: ${address}`);
   console.log(` Tx hash: ${deployTx ? deployTx.hash : "n/a"}`);
 
-  // --- Zapis na deploy info ---
+  // --- Save deploy info ---
   const now = new Date();
   const stamp = now.toISOString().replace(/:/g, "-").replace(/\..+$/, ""); // YYYY-MM-DDTHH-MM-SS
   const dir = path.join(__dirname, "..", "deployed");
@@ -85,15 +85,15 @@ async function main() {
 
   const file = path.join(dir, `${network}_${stamp}.json`);
   fs.writeFileSync(file, JSON.stringify(info, null, 2));
-  console.log(` Deploy info zapisan: ${path.relative(process.cwd(), file)}`);
+  console.log(` Deploy info saved: ${path.relative(process.cwd(), file)}`);
 
-  // --- Verifikacia ---
+  // --- Verification ---
   if (network === "localhost" || network === "hardhat") {
-    console.log("\n Lokalna mreja - propuskame verifikaciata.");
+    console.log("\n Local network - skipping verification.");
     return;
   }
 
-  console.log("\n Chakame 5 potvurjdenia predi verifikacia...");
+  console.log("\n Waiting for 5 confirmations before verification...");
   if (deployTx) await deployTx.wait(5);
 
   try {
@@ -101,14 +101,14 @@ async function main() {
       address,
       constructorArguments: [deployer.address, t1, t2, t3],
     });
-    console.log(" Verifikaciata uspeshna.");
+    console.log(" Verification successful.");
   } catch (err) {
     const msg = (err && err.message) || String(err);
     if (msg.toLowerCase().includes("already verified")) {
-      console.log(" Kontraktat veche e verificiran.");
+      console.log(" Contract is already verified.");
     } else {
-      console.error(" Verifikaciata ne uspja:", msg);
-      console.error(" Mojesh da ja pusnesh rachno sas:");
+      console.error(" Verification failed:", msg);
+      console.error(" You can run it manually with:");
       console.error(`   npx hardhat verify --network ${network} ${address} ${deployer.address} ${t1} ${t2} ${t3}`);
     }
   }

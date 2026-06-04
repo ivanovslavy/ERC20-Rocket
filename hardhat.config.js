@@ -4,18 +4,18 @@ require("dotenv").config();
 const { primaryUrl } = require("./scripts/rpc");
 
 /**
- * Etherscan API V2: edin edinstven API klyuch raboti za VSICHKI podardjani
- * verigi (Ethereum, Sepolia, Base, Polygon, BNB...). Zatova `apiKey` e string.
- * Iziskva @nomicfoundation/hardhat-verify >= 2.0.8.
+ * Etherscan API V2: a single API key works for ALL supported chains (Ethereum, Sepolia,
+ * Base, Polygon, BNB...). That is why `apiKey` is a string. Requires
+ * @nomicfoundation/hardhat-verify >= 2.0.8.
  *
- * RPC: po podrazbiranie se polzva purviat Ankr klyuch (vij scripts/rpc.js).
- * Pulnata fallback logika (red ot Ankr klyuchove) e v scripts/deploy.js.
+ * RPC: by default the first Ankr key is used (see scripts/rpc.js). The full fallback logic
+ * (ordered list of Ankr keys) lives in scripts/deploy.js.
  */
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
 const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
 
-// Vanshen RPC override ili purviat Ankr URL za dadena veriga.
+// Explicit RPC override or the first Ankr URL for a chain.
 function rpc(networkName, fallback) {
   return (
     process.env[`${networkName.toUpperCase()}_RPC_URL`] ||
@@ -25,7 +25,7 @@ function rpc(networkName, fallback) {
   );
 }
 
-// Mainnet fork za testvane (FORK_URL ili purviat Ankr eth).
+// Mainnet fork for testing (FORK_URL or the first Ankr eth URL).
 const FORK_URL = process.env.FORK_URL || primaryUrl("ethereum");
 
 /** @type import('hardhat/config').HardhatUserConfig */
@@ -72,7 +72,7 @@ module.exports = {
     },
   },
 
-  // Etherscan API V2 - edin klyuch za vsichki verigi.
+  // Etherscan API V2 - a single key for all chains.
   etherscan: {
     apiKey: process.env.ETHERSCAN_API_KEY || "",
   },

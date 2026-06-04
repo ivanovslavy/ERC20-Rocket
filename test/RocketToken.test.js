@@ -13,7 +13,7 @@ describe("RocketToken", function () {
     await token.waitForDeployment();
   });
 
-  it("ima pravilno ime, simvol, supply i immutable tier-i", async function () {
+  it("has the correct name, symbol, supply and immutable tiers", async function () {
     expect(await token.name()).to.equal("Rocket");
     expect(await token.symbol()).to.equal("RCT");
     expect(await token.totalSupply()).to.equal(SUPPLY);
@@ -23,7 +23,7 @@ describe("RocketToken", function () {
     expect(await token.tier3Blocks()).to.equal(15n);
   });
 
-  it("konstruktorat othvurlja nevaliden tier config", async function () {
+  it("the constructor rejects an invalid tier config", async function () {
     const Rocket = await ethers.getContractFactory("RocketToken");
     await expect(Rocket.deploy(owner.address, 0, 10, 15)).to.be.revertedWithCustomError(
       Rocket,
@@ -39,7 +39,7 @@ describe("RocketToken", function () {
     );
   });
 
-  it("setLp i executeTrading se vikat samo vednuj", async function () {
+  it("setLp and executeTrading can only be called once", async function () {
     await expect(token.executeTrading()).to.be.revertedWithCustomError(token, "LpNotSet");
     await token.setLp(lp.address);
     await expect(token.setLp(lp.address)).to.be.revertedWithCustomError(token, "LpAlreadySet");
@@ -47,35 +47,35 @@ describe("RocketToken", function () {
     await expect(token.executeTrading()).to.be.revertedWithCustomError(token, "TradingAlreadyOpen");
   });
 
-  it("predi otvarjane: blokira trgovia sreshtu pair, no pozvolyava normalni transferi", async function () {
-    // owner -> lp PREDI setLp (lpPair = 0) -> razresheno
+  it("before open: blocks trading against the pair, but allows normal transfers", async function () {
+    // owner -> lp BEFORE setLp (lpPair = 0) -> allowed
     await token.transfer(lp.address, ethers.parseUnits("1000000000", 18));
     await token.setLp(lp.address);
-    // sega trgovia sreshtu pair-a (predi open) revertva
+    // now trading against the pair (before open) reverts
     await expect(token.connect(lp).transfer(alice.address, 1n)).to.be.revertedWithCustomError(
       token,
       "TradingNotOpen"
     );
-    // no normalen (ne-pair) transfer vse oshte minava
+    // a normal (non-pair) transfer still goes through
     await token.transfer(bob.address, ethers.parseUnits("100", 18));
     expect(await token.balanceOf(bob.address)).to.equal(ethers.parseUnits("100", 18));
   });
 
-  it("guardian buy nalaga max wallet (1% v tier 1) - ownerat ne e izklyuchenie", async function () {
-    await token.transfer(lp.address, SUPPLY / 2n); // owner -> lp predi setLp
+  it("guardian buy enforces the max wallet (1% in tier 1) - the owner is not exempt", async function () {
+    await token.transfer(lp.address, SUPPLY / 2n); // owner -> lp before setLp
     await token.setLp(lp.address);
     await token.executeTrading();
 
     const onePercent = SUPPLY / 100n;
-    await token.connect(lp).transfer(alice.address, onePercent); // buy tochno na limita
+    await token.connect(lp).transfer(alice.address, onePercent); // buy exactly at the limit
     await expect(
       token.connect(lp).transfer(alice.address, 1n)
     ).to.be.revertedWithCustomError(token, "MaxWalletExceeded");
   });
 
-  it("guardian sell izgarja 50% taksa v tier 1", async function () {
+  it("guardian sell burns the 50% tax in tier 1", async function () {
     const amount = ethers.parseUnits("1000", 18);
-    await token.transfer(alice.address, amount); // owner -> alice predi setLp
+    await token.transfer(alice.address, amount); // owner -> alice before setLp
     await token.setLp(lp.address);
     await token.executeTrading();
 
@@ -87,7 +87,7 @@ describe("RocketToken", function () {
     expect(await token.totalTaxBurned()).to.equal(amount / 2n);
   });
 
-  it("burnRocket namaljava supply", async function () {
+  it("burnRocket reduces the supply", async function () {
     const burn = ethers.parseUnits("1000", 18);
     await token.burnRocket(burn);
     expect(await token.totalSupply()).to.equal(SUPPLY - burn);

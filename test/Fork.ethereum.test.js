@@ -1,19 +1,19 @@
 /**
- * Fork test na Ethereum mainnet.
+ * Ethereum mainnet fork test.
  *
- * Forkva mainnet (Uniswap V2 + WETH sa realni) i minava prez celia jiznen tsikul,
- * bez da harchi realni pari:
+ * Forks mainnet (real Uniswap V2 + WETH) and runs the whole lifecycle without spending real
+ * funds:
  *   1. deploy
- *   2. set na LP (sazdava RCT/WETH pair + dobavja likvidnost)
- *   3. pokupka PREDI open trading -> trjabva da revertne
- *   4. otvarjane na treidinga
- *   5. buy (max wallet limit v tier 1)
- *   6. sell taksi (50/40/30%) - sabranata taksa se BURNVA
- *   7. sled blok 30 - bez limit i bez taksa (normalno)
+ *   2. set LP (creates the RCT/WETH pair + adds liquidity)
+ *   3. buy BEFORE trading is open -> must revert
+ *   4. open trading
+ *   5. buy (max wallet limit in tier 1)
+ *   6. sell taxes (50/40/30%) - the collected tax is BURNED
+ *   7. after tier 3 - no limit and no tax (normal)
  *
- * Pusk:
+ * Run:
  *   FORK_URL=<eth rpc> npx hardhat test test/Fork.ethereum.test.js
- * (ako FORK_URL lipsva, testat se propuska)
+ * (if FORK_URL is missing, the test is skipped)
  */
 const { expect } = require("chai");
 const { ethers, network } = require("hardhat");
@@ -29,7 +29,7 @@ const ROUTER_ABI = [
 ];
 const FACTORY_ABI = ["function getPair(address,address) view returns (address)"];
 
-const DEADLINE = 9999999999n; // dalech v budeshteto
+const DEADLINE = 9999999999n; // far in the future
 const SUPPLY = ethers.parseUnits("100000000000", 18); // 100B (= MAX_SUPPLY)
 const ONE_PERCENT = SUPPLY / 100n;
 
@@ -46,7 +46,7 @@ function expectedSellBps(g) {
 
 const runner = process.env.FORK_URL || process.env.ANKR_API_KEYS ? describe : describe.skip;
 
-runner("RocketToken - Ethereum fork (poln flow)", function () {
+runner("RocketToken - Ethereum fork (full flow)", function () {
   this.timeout(180000);
 
   let token, router, factory, pair;
@@ -55,14 +55,14 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
   async function guardianBlock() {
     const open = Number(await token.tradingOpenBlock());
     const cur = await ethers.provider.getBlockNumber();
-    // sledvashtata tx shte se izpalni v blok cur+1
+    // the next tx will be executed in block cur+1
     return cur + 1 - open + 1;
   }
 
-  // Mine dokato sledvashtата tx popadne v dadenia guardian blok G.
+  // Mine until the next tx lands in the given guardian block G.
   async function mineUntilGuardian(targetG) {
     const open = Number(await token.tradingOpenBlock());
-    const targetBlock = open + targetG - 2; // tx v sledvashtia blok -> guardian = targetG
+    const targetBlock = open + targetG - 2; // tx in the next block -> guardian = targetG
     const cur = await ethers.provider.getBlockNumber();
     if (targetBlock > cur) {
       await network.provider.send("hardhat_mine", [
@@ -83,7 +83,7 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     factory = new ethers.Contract(FACTORY, FACTORY_ABI, owner);
   });
 
-  it("1. dobavja likvidnost i setva LP (RCT/WETH pair)", async function () {
+  it("1. adds liquidity and sets the LP (RCT/WETH pair)", async function () {
     const tokenLiq = ethers.parseUnits("20000000000", 18); // 20B RCT
     const ethLiq = ethers.parseEther("100");
 
@@ -108,7 +108,7 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     console.log("    LP pair:", pair);
   });
 
-  it("2. pokupka PREDI open trading revertva", async function () {
+  it("2. a buy BEFORE trading is open reverts", async function () {
     await expect(
       router
         .connect(buyer1)
@@ -122,16 +122,16 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     ).to.be.reverted;
   });
 
-  it("3. executeTrading otvarja treidinga", async function () {
+  it("3. executeTrading opens trading", async function () {
     await (await token.executeTrading()).wait();
     expect(await token.tradingOpen()).to.equal(true);
     console.log("    tradingOpenBlock:", Number(await token.tradingOpenBlock()));
   });
 
-  it("4. TIER 1: malka pokupka minava, golyama (>1%) revertva (max wallet)", async function () {
+  it("4. TIER 1: a small buy goes through, a large one (>1%) reverts (max wallet)", async function () {
     const tokenAddr = await token.getAddress();
 
-    // malka pokupka - pod 1% limita
+    // small buy - below the 1% limit
     await (
       await router
         .connect(buyer1)
@@ -146,9 +146,9 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     const bal1 = await token.balanceOf(buyer1.address);
     expect(bal1).to.be.gt(0n);
     expect(bal1).to.be.lte(ONE_PERCENT);
-    console.log("    buyer1 kupi:", ethers.formatUnits(bal1, 18), "RCT (< 1%)");
+    console.log("    buyer1 bought:", ethers.formatUnits(bal1, 18), "RCT (< 1%)");
 
-    // golyama pokupka - nad 1% -> MaxWalletExceeded
+    // large buy - above 1% -> MaxWalletExceeded
     await expect(
       router
         .connect(buyer2)
@@ -160,13 +160,13 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
           { value: ethers.parseEther("20") }
         )
     ).to.be.reverted;
-    console.log("    golyama pokupka (>1%) korektno revertna");
+    console.log("    large buy (>1%) reverted correctly");
   });
 
-  it("5. SELL taksi po tier-i (50/40/30%) - taksata se BURNVA", async function () {
+  it("5. SELL taxes across tiers (50/40/30%) - the tax is BURNED", async function () {
     const tokenAddr = await token.getAddress();
     await (await token.connect(buyer1).approve(ROUTER, ethers.MaxUint256)).wait();
-    const sellAmount = ethers.parseUnits("10000000", 18); // 10M RCT na prodajba
+    const sellAmount = ethers.parseUnits("10000000", 18); // 10M RCT per sell
 
     for (const targetG of [3, 8, 13]) {
       await mineUntilGuardian(targetG);
@@ -196,16 +196,16 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
       expect(burnedNow).to.equal(expBurn);
       expect(supplyDrop).to.equal(expBurn);
       console.log(
-        `    guardian blok ${g}: taksa ${Number(expBps) / 100}% -> izgoreni ${ethers.formatUnits(expBurn, 18)} RCT`
+        `    guardian block ${g}: tax ${Number(expBps) / 100}% -> burned ${ethers.formatUnits(expBurn, 18)} RCT`
       );
     }
   });
 
-  it("6. SLED tier3 (blok > 15): bez max wallet i bez taksa (normalno)", async function () {
+  it("6. AFTER tier3 (block > 15): no max wallet and no tax (normal)", async function () {
     const tokenAddr = await token.getAddress();
     await mineUntilGuardian(18);
 
-    // golyama pokupka sega minava (bez limit) i balansat moje da nadvishi 1%
+    // a large buy now goes through (no limit) and the balance may exceed 1%
     await (
       await router
         .connect(buyer2)
@@ -219,9 +219,9 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
     ).wait();
     const bal2 = await token.balanceOf(buyer2.address);
     expect(bal2).to.be.gt(ONE_PERCENT);
-    console.log("    buyer2 kupi", ethers.formatUnits(bal2, 18), "RCT (> 1%, bez limit)");
+    console.log("    buyer2 bought", ethers.formatUnits(bal2, 18), "RCT (> 1%, no limit)");
 
-    // prodajba sega - bez taksa, bez burn
+    // sell now - no tax, no burn
     await (await token.connect(buyer2).approve(ROUTER, ethers.MaxUint256)).wait();
     const burnedBefore = await token.totalTaxBurned();
     const sellAmount = ethers.parseUnits("5000000", 18);
@@ -238,7 +238,7 @@ runner("RocketToken - Ethereum fork (poln flow)", function () {
         )
     ).wait();
 
-    expect(await token.totalTaxBurned()).to.equal(burnedBefore); // bez nov burn
-    console.log("    prodajba sled tier3: bez taksa, bez burn - OK");
+    expect(await token.totalTaxBurned()).to.equal(burnedBefore); // no new burn
+    console.log("    sell after tier3: no tax, no burn - OK");
   });
 });

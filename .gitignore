@@ -1,24 +1,24 @@
-# Sekreti / okolna sreda
+# Secrets / environment
 .env
 .env.*
 !.env.example
 
-# Zavisimosti
+# Dependencies
 node_modules/
 
-# Hardhat build artefakti
+# Hardhat build artifacts
 cache/
 artifacts/
 typechain/
 typechain-types/
 
-# Deploy istoria (lokalna, ne se kachva na GitHub)
+# Deployment history (local, not pushed to GitHub)
 deployed/
 
 # Hardhat Ignition
 ignition/deployments/
 
-# Pokritie / otcheti
+# Coverage / reports
 coverage/
 coverage.json
 
@@ -26,7 +26,7 @@ coverage.json
 CLAUDE.md
 PROGRESS.md
 
-# Logove i vremenni faylove
+# Logs and temporary files
 *.log
 npm-debug.log*
 .DS_Store
