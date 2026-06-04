@@ -104,6 +104,26 @@ Each deployment writes a record to `deployed/<network>_<date-time>.json` contain
 address, chain id, deployer, tx hash and constructor arguments. Verification runs
 automatically for every network except `localhost` / `hardhat`.
 
+## Deployments
+
+| Network | Address | Explorer |
+| ------- | ------- | -------- |
+| Sepolia | `0x69dC03236b1ee798C336a51Df78DcA3EA32a0258` | [verified source](https://sepolia.etherscan.io/address/0x69dC03236b1ee798C336a51Df78DcA3EA32a0258#code) |
+
+## Live test on Sepolia
+
+`scripts/sepolia-lifecycle.js` runs the full lifecycle against the deployed contract on
+Sepolia using the real Uniswap V2. It generates and funds a fresh non-exempt trader,
+exercises add-liquidity, `setLp`, buy-before-open (revert), `executeTrading`, the tier-1
+max-wallet limit, sell taxes across tiers (verified against the real block), and normal
+behaviour after block 30, then sweeps the trader's leftover ETH back. It waits for real
+blocks, so it takes a few minutes.
+
+```bash
+node scripts/sepolia-lifecycle.js          # uses the latest deployed/sepolia_*.json
+CONTRACT=0x... node scripts/sepolia-lifecycle.js
+```
+
 ## Mainnet fork test
 
 The full lifecycle is covered by an end-to-end test that forks Ethereum mainnet and uses

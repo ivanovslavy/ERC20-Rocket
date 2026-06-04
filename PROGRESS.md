@@ -4,6 +4,31 @@ Progress and change log. The newest entry is at the top.
 
 ---
 
+## 2026-06-04 — Official Sepolia deployment + live lifecycle test
+
+**Done:**
+- Deployed the official contract to **Sepolia** and **verified** it on Etherscan:
+  - Address: `0x69dC03236b1ee798C336a51Df78DcA3EA32a0258`
+  - https://sepolia.etherscan.io/address/0x69dC03236b1ee798C336a51Df78DcA3EA32a0258#code
+  - Record: `deployed/sepolia_2026-06-04T04-07-25.json`
+  - Deploy used the Ankr RPC fallback signer; verification used the Etherscan V2 key.
+- Added `scripts/sepolia-lifecycle.js` — a live end-to-end test on Sepolia using the real
+  Uniswap V2 (router `0xeE56...CfE3`, factory `0xF62c...80E6`, WETH `0xfFf9...6B14`). Since
+  the deployer is exempt, the script generates and funds a fresh non-exempt trader wallet,
+  then sweeps the leftover ETH back at the end.
+- **Ran the full lifecycle against live Sepolia — all checks passed:**
+  - metadata + 100B supply; guardian views 0 before open.
+  - add liquidity (10B RCT + 0.3 ETH) + `setLp` (+ once-only revert).
+  - buy before open -> reverted; `executeTrading` (+ once-only revert).
+  - tier 1: small buy ~163.4M RCT (< 1%) OK; big buy (>1%) reverted (max wallet).
+  - sell taxes, asserted against the real block: guardian block 4 -> 50% (10M burned),
+    block 12 -> 40% (8M), block 22 -> 30% (6M).
+  - after block 30 (block 32): sell with no tax / no burn.
+- Final on-chain state: `totalTaxBurned` = 24,000,000 RCT, `totalSupply` = 99,976,000,000 RCT.
+- LP pair on Sepolia: `0xE8b60E062DECa3a0dC5D5fCfDc3B5c5767b437Ff`.
+
+---
+
 ## 2026-06-04 — Auto-burn taxes, RPC fallback, fork test, README/LICENSE, GitHub
 
 **Done:**
