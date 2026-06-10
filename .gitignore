@@ -30,3 +30,10 @@ PROGRESS.md
 *.log
 npm-debug.log*
 .DS_Store
+*.key
+*.pem
+*mnemonic*
+keyring*
+.claude/
+claude.md
+progress.md
