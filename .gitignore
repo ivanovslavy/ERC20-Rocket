@@ -25,6 +25,8 @@ coverage.json
 # Internal working docs (not published)
 CLAUDE.md
 PROGRESS.md
+# Локален статус: съдържа адреси и бележка за компрометиран ключ. Репото е ПУБЛИЧНО.
+SASTOYANIE.md
 
 # Logs and temporary files
 *.log
