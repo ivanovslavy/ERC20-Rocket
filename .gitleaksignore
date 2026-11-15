@@ -1,0 +1,3 @@
+# Фалшиво положение: правилото generic-api-key хваща 40-hex адрес на договор (публичен),
+# не API/частен ключ. scripts/sepolia-recover.js:12 (TOKEN CA). Потвърдено: 42-символен адрес.
+f5f713eb9b8439bc7da4bb89b4ac65890e46cab2:scripts/sepolia-recover.js:generic-api-key:12
