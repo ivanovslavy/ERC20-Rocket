@@ -63,7 +63,7 @@ while `lpPair` is still unset (see the launch order below).
 
 | Function              | Access                            | Description                                       |
 | --------------------- | --------------------------------- | ------------------------------------------------- |
-| `setLp(address)`      | onlyOwner, once, nonReentrant     | Sets the LP pair (DEX) address                    |
+| `setLp(address)`      | onlyOwner, once, nonReentrant     | Sets the LP pair; **validated** against the factory (`getPair`) |
 | `executeTrading()`    | onlyOwner, once, nonReentrant     | Opens trading and starts the guardian timer       |
 | `burnRocket(uint256)` | public, nonReentrant              | Burns the caller's own tokens                     |
 | `guardianBlock()`     | view                              | Current guardian block (0 if trading is not open) |
@@ -72,19 +72,20 @@ while `lpPair` is still unset (see the launch order below).
 | `totalTaxBurned()`    | view                              | Total RCT burned from anti-bot sell taxes         |
 | `tier1/2/3Blocks()`   | view (immutable)                  | The per-network tier block thresholds             |
 
-`transfer`, `transferFrom`, `approve`, `burn` and `burnFrom` are reentrancy-guarded. Every
+`setLp`, `executeTrading`, `burn` and `burnFrom` are reentrancy-guarded (`transfer`/`transferFrom`/`approve` are not — the guardian hook in `_update` makes no external calls). Every
 state-changing function emits an event, and every revert uses a named custom error
 (`LpAlreadySet`, `LpNotSet`, `TradingAlreadyOpen`, `TradingNotOpen`, `ZeroAddress`,
-`MaxWalletExceeded`, `InvalidTierConfig`).
+`MaxWalletExceeded`, `InvalidTierConfig`, `InvalidPair`).
 
 ## Constructor
 
 ```solidity
-constructor(address initialOwner, uint256 tier1Blocks, uint256 tier2Blocks, uint256 tier3Blocks)
+constructor(address initialOwner, uint256 tier1Blocks, uint256 tier2Blocks, uint256 tier3Blocks, address factory, address weth)
 ```
 
 The deploy script passes the correct per-network tiers automatically. Requires
-`0 < tier1 < tier2 < tier3`, otherwise it reverts with `InvalidTierConfig`.
+`0 < tier1 < tier2 < tier3 <= MAX_TIER3` (300 blocks), otherwise it reverts with `InvalidTierConfig`.
+`factory` and `weth` are the DEX factory and wrapped-native, used to **validate** the LP pair in `setLp`.
 
 ## Deployments
 
@@ -193,11 +194,18 @@ deployed/                      Deployment records (git-ignored)
 
 Because there are no privileged addresses, the order matters:
 
-1. Deploy the contract (the deploy script sets the per-network tier blocks).
-2. Add liquidity on a **Uniswap V2 (or V2-style)** DEX (while `lpPair` is still unset) and
-   obtain the pair address.
-3. Call `setLp(pair)` (once) with the V2 pair address.
+1. Deploy the contract (the deploy script sets the per-network tiers + factory/weth).
+2. Add liquidity on a **Uniswap V2 (or V2-style)** DEX (while `lpPair` is still unset).
+3. Call `setLp(pair)` (once) — the pair is **validated** against the factory.
 4. Call `executeTrading()` (once) to open trading and start the guardian timer.
+
+> **Steps 2–4 MUST be atomic (one transaction).** While `lpPair` is still `0` (between
+> add-liquidity and `setLp`) the pool is unguarded and a bot can snipe it untaxed/unlimited.
+> Use **`Launcher.sol`** (or a private bundle / Flashbots) so add-liquidity + `setLp` +
+> `executeTrading` land in a single transaction. `Launcher` is deployed first and the token is
+> deployed with `initialOwner = Launcher` (it owns the token and holds the supply); its one-shot
+> `launch()` does all three steps atomically, after which the operator may
+> `renounceTokenOwnership()`.
 
 ## Why Uniswap V2
 

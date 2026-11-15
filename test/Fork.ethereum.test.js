@@ -75,7 +75,7 @@ runner("RocketToken - Ethereum fork (full flow)", function () {
     [owner, buyer1, buyer2] = await ethers.getSigners();
 
     const Rocket = await ethers.getContractFactory("RocketToken");
-    token = await Rocket.connect(owner).deploy(owner.address, ...TIERS);
+    token = await Rocket.connect(owner).deploy(owner.address, ...TIERS, FACTORY, WETH);
     await token.waitForDeployment();
     console.log("    RocketToken deployed:", await token.getAddress());
 

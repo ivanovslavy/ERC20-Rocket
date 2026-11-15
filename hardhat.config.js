@@ -70,11 +70,30 @@ module.exports = {
       accounts,
       chainId: 137,
     },
+    gembaTestnet: {
+      url: rpc("gembaTestnet", "https://rpc1.gembascan.io"),
+      accounts,
+      chainId: 821207,
+    },
+    gembaMainnet: {
+      url: rpc("gembaMainnet", "https://rpc.gembachain.io"),
+      accounts,
+      chainId: 821206,
+    },
   },
 
-  // Etherscan API V2 - a single key for all chains.
+  // Verify: Etherscan V2 (публични вериги) + Blockscout/GembaScan (Gemba).
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY || "",
+    apiKey: {
+      sepolia: process.env.ETHERSCAN_API_KEY || "",
+      mainnet: process.env.ETHERSCAN_API_KEY || "",
+      gembaTestnet: "blockscout",   // Blockscout не иска истински ключ
+      gembaMainnet: "blockscout",
+    },
+    customChains: [
+      { network: "gembaTestnet", chainId: 821207, urls: { apiURL: "https://testnet.gembascan.io/api", browserURL: "https://testnet.gembascan.io" } },
+      { network: "gembaMainnet", chainId: 821206, urls: { apiURL: "https://gembascan.io/api", browserURL: "https://gembascan.io" } },
+    ],
   },
 
   sourcify: {

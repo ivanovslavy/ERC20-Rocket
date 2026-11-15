@@ -39,3 +39,17 @@ keyring*
 .claude/
 claude.md
 progress.md
+battle/battle-wallets.json
+
+# --- v2: operational / scratch / secrets (PUBLIC repo — never commit) ---
+battle/
+audit-window/
+*.rpc
+agents.json
+battle.env
+battle.env.*
+wallets-current.json
+**/wallets/
+*.bak-*
+*.orig-*
+contracts/_backup/
