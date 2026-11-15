@@ -84,12 +84,9 @@ module.exports = {
 
   // Verify: Etherscan V2 (публични вериги) + Blockscout/GembaScan (Gemba).
   etherscan: {
-    apiKey: {
-      sepolia: process.env.ETHERSCAN_API_KEY || "",
-      mainnet: process.env.ETHERSCAN_API_KEY || "",
-      gembaTestnet: "blockscout",   // Blockscout не иска истински ключ
-      gembaMainnet: "blockscout",
-    },
+    // Etherscan V2: ЕДИН ключ за всички Etherscan вериги (V1/обектната форма е спряна).
+    // За Gemba (Blockscout) ключът се игнорира — рутира се по customChains apiURL.
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
     customChains: [
       { network: "gembaTestnet", chainId: 821207, urls: { apiURL: "https://testnet.gembascan.io/api", browserURL: "https://testnet.gembascan.io" } },
       { network: "gembaMainnet", chainId: 821206, urls: { apiURL: "https://gembascan.io/api", browserURL: "https://gembascan.io" } },
