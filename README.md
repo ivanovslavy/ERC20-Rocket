@@ -91,7 +91,9 @@ The deploy script passes the correct per-network tiers automatically. Requires
 
 | Network | Address | Tiers | Explorer |
 | ------- | ------- | ----- | -------- |
-| Sepolia | `0x1A15Be833cFFb8FFB6fDE21c875d5Ee2fa58e388` | 5/10/15 | [verified source](https://sepolia.etherscan.io/address/0x1A15Be833cFFb8FFB6fDE21c875d5Ee2fa58e388#code) |
+| Sepolia | `0x9960Dc6f2b0a20C72DCf10eB147979B6eC67a016` | 5/10/15 | [verified source](https://sepolia.etherscan.io/address/0x9960Dc6f2b0a20C72DCf10eB147979B6eC67a016#code) |
+
+> The table shows the **current** Sepolia deployment (used by the live site at rocket.reisen). Earlier previous test deployments used different addresses and are superseded by the v2 contract.
 
 The Sepolia contract was exercised end-to-end through the deployer wallet (see
 `scripts/sepolia-lifecycle.js`): buy-before-open reverted, a deployer buy during tier 1
