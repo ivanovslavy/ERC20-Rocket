@@ -61,6 +61,15 @@ async function main() {
   // 2. add liquidity (100% of supply + LIQUIDITY_ETH) — BEFORE setLp so it is not
   //    treated as a sell (lpPair is still unset).
   const supply = await token.balanceOf(deployer.address);
+  // Safeguard: 100% of supply must enter the LP (fair launch, no team allocation).
+  // Abort if the deployer does not hold the full totalSupply — i.e. tokens were held back.
+  const totalSupply = await token.totalSupply();
+  if (supply !== totalSupply) {
+    throw new Error(
+      `Refusing to launch: deployer holds ${ethers.formatUnits(supply, 18)} RCT but totalSupply is ` +
+      `${ethers.formatUnits(totalSupply, 18)} RCT. 100% of supply must enter the LP.`,
+    );
+  }
   console.log(`Adding liquidity: ${ethers.formatUnits(supply, 18)} RCT + ${LIQUIDITY_ETH} ETH`);
   await sendRetry(() => token.approve(ROUTER, ethers.MaxUint256), "approve");
   await sendRetry(
